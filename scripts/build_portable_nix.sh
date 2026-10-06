@@ -11,7 +11,7 @@ root=$(git rev-parse --show-toplevel)
 cd "$root"
 output=$(realpath -m "${1:-dist/yaas-nix.AppImage}")
 work="$root/build/portable-nix"
-mkdir -p "$work/source" "$work/cache/home" "$(dirname "$output")"
+mkdir -p "$work/source" "$work/cache/home" "$work/cache/build" "$work/cache/target" "$(dirname "$output")"
 
 if ! docker info >/dev/null 2>&1; then
   echo "Start Docker and ensure your user can access its daemon." >&2
@@ -55,6 +55,8 @@ docker build --build-arg "BUILD_UID=$(id -u)" --build-arg "BUILD_GID=$(id -g)" \
 docker run --rm --user "$(id -u):$(id -g)" \
   --mount "type=bind,source=$work/source,target=/workspace" \
   --mount "type=bind,source=$work/cache,target=/cache" \
+  --mount "type=bind,source=$work/cache/build,target=/workspace/build" \
+  --mount "type=bind,source=$work/cache/target,target=/workspace/target" \
   --env HOME=/cache/home --env CARGO_HOME=/cache/cargo \
   --env YAAS_RELEASE_CHANNEL=development \
   "$image" bash -c 'scripts/build_appimage.sh dist/yaas.AppImage'

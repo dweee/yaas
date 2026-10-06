@@ -30,6 +30,10 @@ build-profile:
 build-appimage:
     ./scripts/build_appimage.sh
 
+# Build a portable Linux AppImage using Nix and Docker
+build-portable output="dist/yaas-nix.AppImage":
+    nix run .#portable-build -- "{{output}}"
+
 # Run all tests
 test:
     cargo test

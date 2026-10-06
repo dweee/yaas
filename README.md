@@ -27,6 +27,9 @@ On Linux and Windows, you can enable portable mode:
 In portable mode, application data is stored alongside the app in `_portable_data`.
 
 
+Portable Linux builds can be driven by Nix with `nix run .#portable-build`.
+See [the Nix build guide](docs/nix_portable_build.md) for Docker requirements and runtime compatibility.
+
 ## Data Storage
 
 YAAS uses the following data directories by default:

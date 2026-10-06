@@ -65,6 +65,7 @@ chmod +x "$app"
 "$SCRIPT_DIR/bundle_updater.sh" squashfs-root/usr/bin
 
 python3 "$SCRIPT_DIR/release.py" verify-bundle linux squashfs-root
+python3 "$SCRIPT_DIR/verify_portable_linux.py" squashfs-root
 
 # Dart opens libmpv.so, while the video plugin links the versioned library.
 # Both names must load the same bundled copy.

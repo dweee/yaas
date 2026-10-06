@@ -33,6 +33,9 @@ RUN curl -fsSL https://github.com/AppImage/appimagetool/releases/download/contin
     && echo '95cbe7cce9717fce90c484e34052ee7c7f1d7635b33c12525b4776826a7d29b6  /usr/local/bin/appimagetool' | sha256sum -c - \
     && chmod +x /usr/local/bin/appimagetool
 
+RUN apt-get update && apt-get install -y --no-install-recommends locate \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN chown -R ${BUILD_UID}:${BUILD_GID} /opt/flutter /opt/pub-cache \
     && mkdir -p /workspace /cache
 ENV APPIMAGE_EXTRACT_AND_RUN=1
