@@ -11,6 +11,16 @@ root=$(git rev-parse --show-toplevel)
 cd "$root"
 output=$(realpath -m "${1:-dist/yaas-nix.AppImage}")
 work="$root/build/portable-nix"
+# Refuse the expensive build before making a source copy or pulling an image.
+python3 - "$root" <<'PY_DISK'
+import shutil
+import sys
+
+required = 25 * 1024**3
+free = shutil.disk_usage(sys.argv[1]).free
+if free < required:
+    sys.exit(f"Portable build needs at least 25 GiB free; only {free / 1024**3:.1f} GiB available. Use the GitHub Actions build instead.")
+PY_DISK
 mkdir -p "$work/source" "$work/cache/home" "$work/cache/build" "$work/cache/target" "$(dirname "$output")"
 
 if ! docker info >/dev/null 2>&1; then

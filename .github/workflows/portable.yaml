@@ -1,0 +1,57 @@
+name: Build portable Linux
+
+on:
+  push:
+    branches:
+      - "codex/**"
+      - "feature/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  appimage:
+    name: Nix portable AppImage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Reclaim unused runner SDK space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h "$GITHUB_WORKSPACE"
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Check build tooling
+        run: |
+          nix flake check --no-update-lock-file
+          python3 -m unittest discover -s scripts/tests -v
+
+      - name: Build portable AppImage
+        run: nix run --no-update-lock-file .#portable-build -- dist/YAAS-linux-x86_64.AppImage
+
+      - name: Record artifact checksum
+        working-directory: dist
+        run: sha256sum YAAS-linux-x86_64.AppImage > SHA256SUMS
+
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: YAAS-linux-x86_64-${{ github.sha }}
+          path: |
+            dist/YAAS-linux-x86_64.AppImage
+            dist/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

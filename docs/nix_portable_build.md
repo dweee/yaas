@@ -1,7 +1,21 @@
 # Portable Linux builds with Nix
 
+## GitHub Actions
+
+The **Build portable Linux** workflow builds this AppImage on an Ubuntu GitHub
+runner using the same Nix command. It runs on pushes to `codex/**` and
+`feature/**` branches and can be started manually from the Actions tab when
+present on the repository's default branch. Download the
+`YAAS-linux-x86_64-<commit>` artifact from the completed run; it contains the
+AppImage and `SHA256SUMS`. No provider API key or repository secrets are needed.
+The workflow frees unused runner SDK space before building and keeps artifacts
+for 14 days. It does not publish releases.
+
+## Local build
+
 From the YAAS checkout on an x86_64 Linux host, with Nix flakes enabled and a
-running Docker daemon accessible to your user:
+running Docker daemon accessible to your user, and at least 25 GiB of free
+workspace disk space:
 
 ```sh
 nix run .#portable-build
