@@ -36,7 +36,7 @@ RUN curl -fsSL https://github.com/AppImage/appimagetool/releases/download/contin
 RUN apt-get update && apt-get install -y --no-install-recommends locate \
     && rm -rf /var/lib/apt/lists/*
 
-RUN chown -R ${BUILD_UID}:${BUILD_GID} /opt/flutter /opt/pub-cache \
+RUN chown -R ${BUILD_UID}:${BUILD_GID} /opt/flutter /opt/pub-cache /opt/rustup \
     && mkdir -p /workspace /cache
 ENV APPIMAGE_EXTRACT_AND_RUN=1
 WORKDIR /workspace
