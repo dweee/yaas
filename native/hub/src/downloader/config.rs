@@ -40,6 +40,8 @@ pub(crate) struct DownloaderConfig {
     pub layout: RepoLayoutKind,
     #[serde(default)]
     pub base_url: Option<String>,
+    #[serde(default)]
+    pub public_server: Option<PublicServerConfig>,
     #[serde(default = "default_root_dir")]
     pub root_dir: String,
     #[serde(default = "default_list_path")]
@@ -92,6 +94,16 @@ impl DownloaderConfig {
                         .map(|value| !value.trim().is_empty())
                         .unwrap_or(false),
                     "rclone_config_path is required for the ffa repository layout"
+                );
+            }
+            RepoLayoutKind::PublicServer => {
+                self.public_server
+                    .as_ref()
+                    .context("public_server is required for the public-server layout")?
+                    .validate()?;
+                ensure!(
+                    self.rclone_path.is_some(),
+                    "rclone_path is required for the public-server layout"
                 );
             }
             RepoLayoutKind::NewRepo => {
@@ -165,6 +177,9 @@ impl DownloaderConfig {
                     && self.donation_remote_path == other.donation_remote_path
                     && self.donation_blacklist_path == other.donation_blacklist_path
             }
+            RepoLayoutKind::PublicServer => {
+                self.public_server == other.public_server && self.rclone_path == other.rclone_path
+            }
             RepoLayoutKind::NewRepo => {
                 self.base_url.as_deref().map(|url| url.trim_end_matches('/'))
                     == other.base_url.as_deref().map(|url| url.trim_end_matches('/'))
@@ -233,6 +248,7 @@ impl Default for DownloaderConfig {
             donation_blacklist_path: None,
             layout: RepoLayoutKind::Ffa,
             base_url: None,
+            public_server: None,
             root_dir: default_root_dir(),
             list_path: default_list_path(),
             config_update_url: None,
@@ -247,6 +263,7 @@ pub(crate) enum RepoLayoutKind {
     Ffa,
     #[serde(rename = "new-repo")]
     NewRepo,
+    PublicServer,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -408,5 +425,98 @@ mod tests {
         assert_eq!(cfg.layout, RepoLayoutKind::NewRepo);
         assert!(cfg.rclone_path.is_none());
         assert_eq!(cfg.base_url.as_deref(), Some("https://example.com/repo"));
+    }
+}
+
+/// The provider's ServerInfo.json fields, plus a runtime credential source.
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+pub(crate) struct PublicServerConfig {
+    #[serde(rename = "baseUri")]
+    pub base_uri: String,
+    pub password: String,
+    #[serde(default = "default_api_key_env")]
+    pub api_key_env: String,
+}
+
+fn default_api_key_env() -> String {
+    "YAAS_PUBLIC_SERVER_API_KEY".into()
+}
+
+impl fmt::Debug for PublicServerConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublicServerConfig")
+            .field("base_uri", &SensitiveUrl::new(&self.base_uri))
+            .field("password", &"[redacted]")
+            .field("api_key_env", &self.api_key_env)
+            .finish()
+    }
+}
+
+impl PublicServerConfig {
+    fn validate(&self) -> Result<()> {
+        let url = reqwest::Url::parse(&self.base_uri).context("Invalid public server baseUri")?;
+        ensure!(
+            matches!(url.scheme(), "http" | "https"),
+            "public server baseUri must use http or https"
+        );
+        ensure!(
+            url.query().is_none()
+                && url.fragment().is_none()
+                && url.username().is_empty()
+                && url.password().is_none(),
+            "public server baseUri must not contain credentials, a query, or a fragment"
+        );
+        self.decoded_password()?;
+        ensure!(!self.api_key_env.trim().is_empty(), "api_key_env must not be empty");
+        Ok(())
+    }
+
+    pub(crate) fn decoded_password(&self) -> Result<String> {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&self.password)
+            .context("Public server password must be base64")?;
+        let password =
+            String::from_utf8(bytes).context("Public server password must decode to UTF-8")?;
+        ensure!(
+            !password.is_empty() && !password.contains('\0'),
+            "Public server password must not be empty or contain NUL"
+        );
+        Ok(password)
+    }
+}
+
+#[cfg(test)]
+mod public_server_tests {
+    use super::*;
+
+    #[test]
+    fn validates_provider_json_and_redacts_password() {
+        let cfg: DownloaderConfig = serde_json::from_str(
+            r#"{
+            "id":"public", "layout":"public-server", "rclone_path":"rclone",
+            "public_server":{"baseUri":"https://example.com/library/", "password":"c2VjcmV0"}
+        }"#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let server = cfg.public_server.as_ref().unwrap();
+        assert_eq!(server.decoded_password().unwrap(), "secret");
+        assert_eq!(server.api_key_env, "YAAS_PUBLIC_SERVER_API_KEY");
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("c2VjcmV0"));
+        assert!(!debug.contains("secret"));
+        let mut invalid = cfg.clone();
+        invalid.public_server.as_mut().unwrap().password = "invalid!".into();
+        assert!(invalid.validate().is_err());
+        invalid = cfg.clone();
+        invalid.public_server.as_mut().unwrap().base_uri = "file:///tmp".into();
+        assert!(invalid.validate().is_err());
+        invalid = cfg.clone();
+        invalid.public_server.as_mut().unwrap().base_uri += "?secret";
+        assert!(invalid.validate().is_err());
+        invalid = cfg.clone();
+        invalid.public_server.as_mut().unwrap().password = "bmV3".into();
+        assert!(!cfg.same_runtime(&invalid));
     }
 }

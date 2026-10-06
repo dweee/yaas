@@ -12,6 +12,7 @@ edition = "2024"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
+base64 = "0.22"
 app-update = { path = "../app_update" }
 sha2 = "0.11"
 anyhow = { version = "1.0.104", features = ["backtrace"] }

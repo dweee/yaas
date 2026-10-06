@@ -31,7 +31,7 @@ const RCLONE_SPEED_SAMPLE_WINDOW: Duration = Duration::from_secs(8);
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 #[allow(unused)]
-pub(super) struct RcloneLsJsonEntry {
+pub(in crate::downloader) struct RcloneLsJsonEntry {
     pub path: String,
     pub name: String,
     pub size: u64,
@@ -43,7 +43,7 @@ pub(super) struct RcloneLsJsonEntry {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct RcloneSizeOutput {
+pub(in crate::downloader) struct RcloneSizeOutput {
     pub bytes: u64,
 }
 
@@ -156,8 +156,9 @@ impl RcloneJsonLogLine {
 }
 
 #[derive(Debug)]
-pub(super) enum RcloneTransferOperation {
+pub(in crate::downloader) enum RcloneTransferOperation {
     Copy,
+    CopyTo,
     Sync,
 }
 
@@ -165,22 +166,29 @@ impl RcloneTransferOperation {
     fn as_str(&self) -> &str {
         match self {
             RcloneTransferOperation::Copy => "copy",
+            RcloneTransferOperation::CopyTo => "copyto",
             RcloneTransferOperation::Sync => "sync",
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct RcloneCli {
+#[derive(derive_more::Debug, Clone)]
+pub(in crate::downloader) struct RcloneCli {
     rclone_path: PathBuf,
     config_path: PathBuf,
     sys_proxy: Option<String>,
     bandwidth_limit: String,
+    #[debug(skip)]
+    public_http: Option<(String, String)>,
 }
 
 impl RcloneCli {
     #[instrument(level = "debug", fields(sys_proxy), ret)]
-    pub(super) fn new(rclone_path: PathBuf, config_path: PathBuf, bandwidth_limit: String) -> Self {
+    pub(in crate::downloader) fn new(
+        rclone_path: PathBuf,
+        config_path: PathBuf,
+        bandwidth_limit: String,
+    ) -> Self {
         let sys_proxy = get_sys_proxy();
         let resolved_path =
             match resolve_binary_path(Some(&rclone_path.to_string_lossy()), "rclone") {
@@ -195,10 +203,24 @@ impl RcloneCli {
                 }
             };
         Span::current().record("sys_proxy", sys_proxy.as_deref());
-        Self { rclone_path: resolved_path, config_path, sys_proxy, bandwidth_limit }
+        Self {
+            rclone_path: resolved_path,
+            config_path,
+            sys_proxy,
+            bandwidth_limit,
+            public_http: None,
+        }
     }
 
-    pub(super) fn set_bandwidth_limit(&mut self, limit: String) {
+    pub(in crate::downloader) fn configure_public_http(
+        &mut self,
+        base_uri: String,
+        api_key: String,
+    ) {
+        self.public_http = Some((base_uri, api_key));
+    }
+
+    pub(in crate::downloader) fn set_bandwidth_limit(&mut self, limit: String) {
         self.bandwidth_limit = limit;
     }
 
@@ -226,7 +248,21 @@ impl RcloneCli {
 
         command.args(["--contimeout", CONNECTION_TIMEOUT, "--timeout", IO_IDLE_TIMEOUT]);
         command.args(args);
-        trace!(command = ?command, "Constructed rclone command");
+        if let Some((base_uri, api_key)) = &self.public_http {
+            command.env("RCLONE_HTTP_URL", base_uri);
+            command.env("RCLONE_HEADER", format!("X-API-Key: {api_key}"));
+            command.args([
+                "--partial-suffix",
+                ".partial",
+                "--multi-thread-streams",
+                "0",
+                "--tpslimit",
+                "1",
+                "--tpslimit-burst",
+                "3",
+            ]);
+        }
+        trace!(args = ?args, "Constructed rclone command");
         command
     }
 
@@ -249,13 +285,13 @@ impl RcloneCli {
     }
 
     #[instrument(skip(self), level = "debug")]
-    pub(super) async fn remotes(&self) -> Result<Vec<String>> {
+    pub(in crate::downloader) async fn remotes(&self) -> Result<Vec<String>> {
         let output = self.run_to_string(&["listremotes"]).await?;
         Ok(output.lines().map(|line| line.trim().trim_end_matches(':').to_string()).collect())
     }
 
     #[instrument(level = "debug", skip(self), ret, err)]
-    pub(super) async fn size(&self, path: &str) -> Result<RcloneSizeOutput> {
+    pub(in crate::downloader) async fn size(&self, path: &str) -> Result<RcloneSizeOutput> {
         // TODO: can `--check-first` be used to make `total_bytes` reliable instead?
         let output = self.run_to_string(&["size", "--fast-list", "--json", path]).await?;
         let size_output: RcloneSizeOutput =
@@ -264,7 +300,7 @@ impl RcloneCli {
     }
 
     #[instrument(level = "debug", skip(self, cancellation_token))]
-    pub(super) async fn transfer(
+    pub(in crate::downloader) async fn transfer(
         &self,
         source: String,
         dest: String,
@@ -275,7 +311,7 @@ impl RcloneCli {
     }
 
     #[instrument(level = "debug", skip(self, stats_tx, cancellation_token))]
-    pub(super) async fn transfer_with_stats(
+    pub(in crate::downloader) async fn transfer_with_stats(
         &self,
         source: String,
         dest: String,
@@ -331,7 +367,15 @@ impl RcloneCli {
 
         let use_json_log = stats_tx.is_some();
         let child = self.command(&args, use_json_log).stderr(Stdio::piped()).spawn()?;
-        finish_transfer(child, total_bytes, stats_tx, cancellation_token, use_json_log).await
+        finish_transfer(
+            child,
+            total_bytes,
+            stats_tx,
+            cancellation_token,
+            use_json_log,
+            self.public_http.as_ref().map(|(_, key)| key.as_str()),
+        )
+        .await
     }
 }
 
@@ -341,6 +385,7 @@ async fn finish_transfer(
     stats_tx: Option<UnboundedSender<TransferStats>>,
     cancellation_token: Option<CancellationToken>,
     use_json_log: bool,
+    secret: Option<&str>,
 ) -> Result<()> {
     let stderr = child.stderr.take().context("Failed to get stderr")?;
     let mut lines = BufReader::new(stderr).lines();
@@ -359,6 +404,7 @@ async fn finish_transfer(
             tokio::select! {
                 line = lines.next_line() => {
                     let Some(line) = line? else { break };
+                    let line = if let Some(secret) = secret.filter(|s| !s.is_empty()) { line.replace(secret, "[redacted]") } else { line };
                     if use_json_log {
                         match serde_json::from_str::<RcloneJsonLogLine>(&line) {
                             Ok(log_line) => {
@@ -477,6 +523,9 @@ mod tests {
         for _ in 0..20_000 {
             writeln!(stderr, "diagnostic {}", "x".repeat(128)).unwrap();
         }
+        if mode == "secret" {
+            writeln!(stderr, "provider fixture-key rejected").unwrap();
+        }
         writeln!(stderr, "last diagnostic").unwrap();
         stderr.flush().unwrap();
         if mode == "cancel" {
@@ -484,7 +533,18 @@ mod tests {
                 std::thread::park();
             }
         }
-        std::process::exit(if mode == "failure" { 7 } else { 0 });
+        std::process::exit(if mode == "failure" || mode == "secret" { 7 } else { 0 });
+    }
+
+    #[tokio::test]
+    async fn transfer_errors_redact_provider_key() {
+        let error =
+            finish_transfer(test_child("secret"), None, None, None, false, Some("fixture-key"))
+                .await
+                .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("provider [redacted] rejected"));
+        assert!(!message.contains("fixture-key"));
     }
 
     #[tokio::test]
@@ -492,7 +552,7 @@ mod tests {
         for mode in ["success", "failure"] {
             let result = tokio::time::timeout(
                 Duration::from_secs(10),
-                finish_transfer(test_child(mode), None, None, None, false),
+                finish_transfer(test_child(mode), None, None, None, false, None),
             )
             .await
             .expect("stderr pipe deadlocked");
@@ -512,7 +572,7 @@ mod tests {
         drop(rx);
         tokio::time::timeout(
             Duration::from_secs(10),
-            finish_transfer(test_child("progress"), Some(100), Some(tx), None, true),
+            finish_transfer(test_child("progress"), Some(100), Some(tx), None, true, None),
         )
         .await
         .expect("stderr pipe deadlocked")
@@ -529,6 +589,7 @@ mod tests {
             Some(tx),
             Some(token.clone()),
             true,
+            None,
         ));
         tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.unwrap().unwrap();
         token.cancel();

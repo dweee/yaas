@@ -40,7 +40,10 @@ pub(crate) async fn prepare_rclone_files(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("rclone_path is required for this repository layout"))?
         .resolve_for_current_platform()?;
-    let maybe_config_source = cfg.rclone_config_path.as_deref();
+    let public_server = cfg.layout == crate::downloader::config::RepoLayoutKind::PublicServer;
+    let null_config = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let maybe_config_source =
+        if public_server { Some(null_config) } else { cfg.rclone_config_path.as_deref() };
 
     let bin_is_url = is_http_url(&bin_source);
     let config_is_url = maybe_config_source.map(is_http_url).unwrap_or(false);
@@ -54,7 +57,7 @@ pub(crate) async fn prepare_rclone_files(
     };
     // TODO: extract validation to config parser
     ensure!(
-        bin_is_url == config_is_url,
+        public_server || bin_is_url == config_is_url,
         "rclone_path and rclone_config_path must both be local or both be URLs"
     );
 
@@ -64,20 +67,23 @@ pub(crate) async fn prepare_rclone_files(
     }
 
     let bin_dst = cache_dir.join(if cfg!(windows) { "rclone.exe" } else { "rclone" });
-    let conf_dst = cache_dir.join("rclone.conf");
+    let conf_dst =
+        if public_server { PathBuf::from(null_config) } else { cache_dir.join("rclone.conf") };
 
     let client = build_http_client()?;
 
-    ensure_remote_file(
-        &client,
-        config_source,
-        &conf_dst,
-        cache_dir,
-        false,
-        "rclone config",
-        cancel,
-    )
-    .await?;
+    if !public_server {
+        ensure_remote_file(
+            &client,
+            config_source,
+            &conf_dst,
+            cache_dir,
+            false,
+            "rclone config",
+            cancel,
+        )
+        .await?;
+    }
 
     if is_zip_url(&bin_source) {
         ensure_remote_rclone_from_zip(&client, &bin_source, cache_dir, &bin_dst, cancel).await?;

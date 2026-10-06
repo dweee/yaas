@@ -1362,6 +1362,7 @@ dependencies = [
  "apk-info",
  "app-update",
  "async-trait",
+ "base64",
  "bitflags 2.13.1",
  "built",
  "const-hex",

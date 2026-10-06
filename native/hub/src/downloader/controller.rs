@@ -393,8 +393,11 @@ impl DownloaderController {
                 Ok(updated) => {
                     report.refreshed += 1;
                     // Runtime files can change without their URLs changing.
-                    let refresh_runtime = updated.layout == RepoLayoutKind::Ffa
-                        && current.as_ref().unwrap().active_config_id.as_deref()
+                    let refresh_runtime =
+                        matches!(
+                            updated.layout,
+                            RepoLayoutKind::Ffa | RepoLayoutKind::PublicServer
+                        ) && current.as_ref().unwrap().active_config_id.as_deref()
                             == Some(updated.id.as_str());
                     if let Err(error) = self.reconcile(&mut state, refresh_runtime, &[]).await {
                         report.failed.push(format!("{}: {error:#}", cfg.id));

@@ -15,6 +15,8 @@ use crate::{
 
 mod ffa;
 mod newrepo;
+mod public_server;
+use public_server::PublicServerRepo;
 
 #[derive(Debug, Clone)]
 pub(super) struct RepoAppList {
@@ -33,12 +35,14 @@ pub(super) struct RepoDownloadResult {
 pub(super) enum Repo {
     Ffa(Box<FFARepo>),
     NewRepo(NewRepo),
+    PublicServer(PublicServerRepo),
 }
 
 pub(super) fn capabilities(layout: RepoLayoutKind) -> RepoCapabilities {
     match layout {
         RepoLayoutKind::Ffa => FFARepo::capabilities(),
         RepoLayoutKind::NewRepo => NewRepo::capabilities(),
+        RepoLayoutKind::PublicServer => PublicServerRepo::capabilities(),
     }
 }
 
@@ -54,6 +58,10 @@ impl Repo {
                 let (repo, remote) = FFARepo::new(cfg, cache_dir, settings, cancel).await?;
                 Ok((Self::Ffa(Box::new(repo)), remote))
             }
+            RepoLayoutKind::PublicServer => Ok((
+                Self::PublicServer(PublicServerRepo::new(cfg, cache_dir, settings, cancel).await?),
+                None,
+            )),
             RepoLayoutKind::NewRepo => Ok((Self::NewRepo(NewRepo::from_config(cfg)), None)),
         }
     }
@@ -61,20 +69,22 @@ impl Repo {
     pub(super) fn remote(&self) -> Option<&str> {
         match self {
             Self::Ffa(repo) => Some(repo.remote()),
-            Self::NewRepo(_) => None,
+            Self::NewRepo(_) | Self::PublicServer(_) => None,
         }
     }
 
     pub(super) fn set_bandwidth_limit(&mut self, limit: String) {
-        if let Self::Ffa(repo) = self {
-            repo.set_bandwidth_limit(limit);
+        match self {
+            Self::Ffa(repo) => repo.set_bandwidth_limit(limit),
+            Self::PublicServer(repo) => repo.set_bandwidth_limit(limit),
+            Self::NewRepo(_) => {}
         }
     }
 
     pub(super) async fn select_remote(&mut self, requested: &str) -> Result<Option<String>> {
         match self {
             Self::Ffa(repo) => repo.select_remote(requested).await.map(Some),
-            Self::NewRepo(_) => Ok(None),
+            Self::NewRepo(_) | Self::PublicServer(_) => Ok(None),
         }
     }
 
@@ -82,6 +92,7 @@ impl Repo {
         match self {
             Self::Ffa(repo) => repo.list_remotes().await,
             Self::NewRepo(repo) => repo.list_remotes().await,
+            Self::PublicServer(_) => Ok(Vec::new()),
         }
     }
 
@@ -93,6 +104,7 @@ impl Repo {
     ) -> Result<RepoAppList> {
         match self {
             Self::Ffa(repo) => repo.load_app_list(cache_dir, cancellation_token).await,
+            Self::PublicServer(repo) => repo.load_app_list(cache_dir, cancellation_token).await,
             Self::NewRepo(repo) => {
                 repo.load_app_list(cache_dir, http_client, cancellation_token).await
             }
@@ -110,6 +122,10 @@ impl Repo {
     ) -> Result<RepoDownloadResult> {
         match self {
             Self::Ffa(repo) => {
+                repo.download_app(app_full_name, destination_dir, progress_tx, cancellation_token)
+                    .await
+            }
+            Self::PublicServer(repo) => {
                 repo.download_app(app_full_name, destination_dir, progress_tx, cancellation_token)
                     .await
             }
@@ -136,6 +152,9 @@ impl Repo {
         match self {
             Self::Ffa(repo) => {
                 repo.upload_donation_archive(archive_path, stats_tx, cancellation_token).await
+            }
+            Self::PublicServer(_) => {
+                anyhow::bail!("Public server does not support donation uploads")
             }
             Self::NewRepo(repo) => {
                 repo.upload_donation_archive(archive_path, stats_tx, cancellation_token).await
